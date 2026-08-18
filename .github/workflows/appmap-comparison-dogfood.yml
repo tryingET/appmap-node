@@ -168,3 +168,26 @@ jobs:
           path: appmap-comparison-dogfood.vsix
           retention-days: 14
           if-no-files-found: error
+
+  review-publisher:
+    name: Verify review artifact publisher
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out review-action comparison publisher
+        uses: actions/checkout@v6
+        with:
+          repository: tryingET/review-action
+          ref: agent/upload-comparison-artifact
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Run offline action harness
+        run: test/run.sh
+
+      - name: Validate comparison skill contract is present
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s test/fixtures/skills-src/appmap-comparison/SKILL.md
+          grep -q 'appmap-comparison' scripts/install-skills.sh
+          grep -q 'upload-comparison-artifact' action.yml
