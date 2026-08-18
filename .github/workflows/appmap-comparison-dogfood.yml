@@ -120,6 +120,7 @@ jobs:
 
   vscode-viewer:
     name: Build and exercise comparison viewer
+    needs: comparison-bundle
     runs-on: ubuntu-latest
     steps:
       - name: Check out VS Code comparison prototype
@@ -129,6 +130,21 @@ jobs:
           ref: agent/sequence-comparison-editor
           fetch-depth: 1
           persist-credentials: false
+
+      - name: Download the generated comparison bundle
+        uses: actions/download-artifact@v8
+        with:
+          name: appmap-pr-comparison
+          path: dogfood-comparison
+
+      - name: Install the generated bundle as the editor test fixture
+        shell: bash
+        run: |
+          set -euo pipefail
+          target="test/fixtures/workspaces/project-diagram-diff/data/diff/minitest/Users_edit_unsuccessful_edit.compare.diff.sequence.json"
+          mkdir -p "$(dirname "$target")"
+          cp dogfood-comparison/authorization.compare.diff.sequence.json "$target"
+          printf 'authorize\n' > "$target.expect"
 
       - uses: actions/setup-node@v6
         with:
@@ -147,7 +163,7 @@ jobs:
           yarn test:precache
           yarn download-tools
 
-      - name: Open a comparison bundle in the extension host
+      - name: Open the generated comparison bundle in the extension host
         shell: bash
         run: |
           export XDG_RUNTIME_DIR=/run/user/$(id -u)
