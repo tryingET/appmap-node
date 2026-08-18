@@ -1,0 +1,170 @@
+name: Dogfood AppMap PR comparison
+
+on:
+  push:
+    branches:
+      - 'agent/**'
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: appmap-comparison-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  comparison-bundle:
+    name: Record and compare base/head behavior
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out base revision
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.base.sha || github.event.repository.default_branch }}
+          path: base
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Check out head revision
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          path: head
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Check out comparison CLI prototype
+        uses: actions/checkout@v6
+        with:
+          repository: tryingET/appmap-js
+          ref: agent/sequence-comparison-bundle
+          path: appmap-js
+          fetch-depth: 1
+          persist-credentials: false
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+
+      - name: Install and build both appmap-node revisions
+        shell: bash
+        run: |
+          set -euo pipefail
+          corepack enable
+          (cd base && yarn install --immutable && yarn prepack)
+          (cd head && yarn install --immutable && yarn prepack)
+
+      - name: Record control and visual scenarios
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p comparison/appmaps
+          node head/test/behavioralComparison/record.mjs base control comparison/appmaps/control-base.appmap.json
+          node head/test/behavioralComparison/record.mjs head control comparison/appmaps/control-head.appmap.json
+          node head/test/behavioralComparison/record.mjs base before comparison/appmaps/demo-base.appmap.json
+          node head/test/behavioralComparison/record.mjs head after comparison/appmaps/demo-head.appmap.json
+
+      - name: Build comparison CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          corepack enable
+          cd appmap-js
+          yarn install --immutable
+          yarn build
+
+      - name: Sanitize recordings and build portable comparison bundles
+        shell: bash
+        run: |
+          set -euo pipefail
+          CLI="node appmap-js/packages/cli/built/cli.js"
+          BASE_SHA="$(git -C base rev-parse HEAD)"
+          HEAD_SHA="$(git -C head rev-parse HEAD)"
+
+          $CLI sanitize comparison/appmaps/*.appmap.json
+
+          $CLI sequence-diagram-compare \
+            comparison/appmaps/control-base.appmap.json \
+            comparison/appmaps/control-head.appmap.json \
+            --scenario appmap-node-control \
+            --base-revision "$BASE_SHA" \
+            --head-revision "$HEAD_SHA" \
+            --output-file comparison/control.compare.diff.sequence.json
+
+          $CLI sequence-diagram-compare \
+            comparison/appmaps/demo-base.appmap.json \
+            comparison/appmaps/demo-head.appmap.json \
+            --scenario added-authorization-call \
+            --base-revision "$BASE_SHA" \
+            --head-revision "$HEAD_SHA" \
+            --output-file comparison/authorization.compare.diff.sequence.json
+
+      - name: Verify dogfood result
+        shell: bash
+        run: |
+          node head/test/behavioralComparison/validate.mjs \
+            comparison/control.compare.diff.sequence.json \
+            comparison/authorization.compare.diff.sequence.json \
+            comparison/summary.md
+          cat comparison/summary.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload interactive comparison artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: appmap-pr-comparison
+          path: comparison
+          retention-days: 14
+          if-no-files-found: error
+
+  vscode-viewer:
+    name: Build and exercise comparison viewer
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out VS Code comparison prototype
+        uses: actions/checkout@v6
+        with:
+          repository: tryingET/vscode-appland
+          ref: agent/sequence-comparison-editor
+          fetch-depth: 1
+          persist-credentials: false
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 18
+          cache: yarn
+
+      - name: Install, typecheck, and compile
+        run: |
+          corepack enable
+          yarn install --immutable
+          yarn pretest
+          yarn compile
+
+      - name: Prepare Electron integration environment
+        run: |
+          yarn test:precache
+          yarn download-tools
+
+      - name: Open a comparison bundle in the extension host
+        shell: bash
+        run: |
+          export XDG_RUNTIME_DIR=/run/user/$(id -u)
+          export DBUS_SESSION_BUS_ADDRESS=unix:path=$XDG_RUNTIME_DIR/bus
+          sudo mkdir -p "$XDG_RUNTIME_DIR"
+          sudo chown "$(id -u):$(id -g)" "$XDG_RUNTIME_DIR"
+          dbus-daemon --session --address="$DBUS_SESSION_BUS_ADDRESS" --fork --nopidfile
+          xvfb-run --auto-servernum --server-args="-screen 0 1280x960x24" -- \
+            yarn test:integration test/integration/appmapEditor/openSequenceComparison.test.ts
+
+      - name: Package dogfood VSIX
+        run: yarn vsce package --out appmap-comparison-dogfood.vsix
+
+      - name: Upload comparison viewer
+        uses: actions/upload-artifact@v6
+        with:
+          name: appmap-comparison-vsix
+          path: appmap-comparison-dogfood.vsix
+          retention-days: 14
+          if-no-files-found: error
