@@ -66,7 +66,7 @@ jobs:
           node head/test/behavioralComparison/record.mjs base before comparison/appmaps/demo-base.appmap.json
           node head/test/behavioralComparison/record.mjs head after comparison/appmaps/demo-head.appmap.json
 
-      - name: Build comparison CLI
+      - name: Build and test comparison contract
         shell: bash
         run: |
           set -euo pipefail
@@ -74,6 +74,8 @@ jobs:
           cd appmap-js
           yarn install --immutable
           yarn build
+          yarn workspace @appland/models test comparison --runInBand
+          yarn workspace @appland/appmap test sequenceDiagramCompare --runInBand
 
       - name: Sanitize recordings and build portable comparison bundles
         shell: bash
