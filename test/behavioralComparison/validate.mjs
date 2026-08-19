@@ -11,6 +11,7 @@ if (!controlFile || !demoFile || !summaryFile) {
 
 const control = JSON.parse(await readFile(controlFile, 'utf8'));
 const demo = JSON.parse(await readFile(demoFile, 'utf8'));
+const changeIdPattern = /^chg_[0-9a-f]{20}(?:_[2-9][0-9]*|_[1-9][0-9]+)?$/;
 
 for (const bundle of [control, demo]) {
   assert.equal(bundle.kind, 'appmap.comparison');
@@ -25,8 +26,13 @@ for (const bundle of [control, demo]) {
   assert(Array.isArray(bundle.changes));
   assert.equal(new Set(bundle.changes.map((change) => change.id)).size, bundle.changes.length);
   bundle.changes.forEach((change) => {
-    assert.match(change.id, /^chg_[0-9a-f]{20}(?:_[1-9][0-9]*)?$/);
+    assert.match(change.id, changeIdPattern);
     assert(change.views?.sequence);
+    const references = [change.views.sequence.base, change.views.sequence.head]
+      .filter(Boolean)
+      .flatMap((reference) => [reference.eventIds, reference.elementIds])
+      .filter(Boolean);
+    assert(references.length > 0, `change ${change.id} has no navigable sequence reference`);
   });
 }
 
@@ -55,6 +61,7 @@ const summary =
   `- Visual scenario: **${demo.changes.length} semantic change(s)** detected.\n` +
   `- Added authorization call: **confirmed**.\n` +
   `- Change IDs: **deterministic, non-positional hashes**.\n` +
+  `- Structural changes without events: **retained through element IDs**.\n` +
   `- Artifact: download \`appmap-pr-comparison\` and open either ` +
   `\`*.compare.diff.sequence.json\` file with the companion VS Code extension PR.\n`;
 
