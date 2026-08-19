@@ -14,6 +14,12 @@ concurrency:
   group: appmap-comparison-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  COMPARISON_CLI_SHA: aab690a5c4c01802551993718b508718c1139c11
+  COMPARISON_VIEWER_SHA: cfd3a0fef35b016cb0af20ee02ae46fd35414069
+  COMPARISON_REVIEW_ACTION_SHA: 67060904f03c0c8a1492e610f845eefd29e53a78
+  COMPARISON_SKILLS_SHA: 167db8d4b7eb56086c74a9ef9ffe7b2d3c8ab627
+
 jobs:
   comparison-bundle:
     name: Record and compare base/head behavior
@@ -35,11 +41,11 @@ jobs:
           fetch-depth: 1
           persist-credentials: false
 
-      - name: Check out comparison CLI prototype
+      - name: Check out frozen comparison CLI contract
         uses: actions/checkout@v6
         with:
           repository: tryingET/appmap-js
-          ref: agent/sequence-comparison-bundle
+          ref: ${{ env.COMPARISON_CLI_SHA }}
           path: appmap-js
           fetch-depth: 1
           persist-credentials: false
@@ -72,6 +78,7 @@ jobs:
           set -euo pipefail
           corepack enable
           cd appmap-js
+          test "$(git rev-parse HEAD)" = "$COMPARISON_CLI_SHA"
           yarn install --immutable
           yarn build
           yarn workspace @appland/models test comparison --runInBand
@@ -103,19 +110,41 @@ jobs:
             --head-revision "$HEAD_SHA" \
             --output-file comparison/authorization.compare.diff.sequence.json
 
-      - name: Verify dogfood result
+      - name: Verify and publish the frozen contract with the artifact
         shell: bash
         run: |
+          set -euo pipefail
           node head/test/behavioralComparison/validate.mjs \
             comparison/control.compare.diff.sequence.json \
             comparison/authorization.compare.diff.sequence.json \
             comparison/summary.md
+
+          mkdir -p comparison/contract/examples
+          cp appmap-js/packages/models/schema/comparison.schema.json comparison/contract/
+          cp appmap-js/packages/models/schema/README.md comparison/contract/
+          cp appmap-js/packages/models/schema/CHANGELOG.md comparison/contract/
+          cp appmap-js/packages/models/schema/examples/*.json comparison/contract/examples/
+
+          BASE_SHA="$(git -C base rev-parse HEAD)"
+          HEAD_SHA="$(git -C head rev-parse HEAD)"
+          cat > comparison/contract-lock.json <<JSON
+          {
+            "comparisonSchema": 1,
+            "appmapNodeBase": "$BASE_SHA",
+            "appmapNodeHead": "$HEAD_SHA",
+            "appmapJs": "$COMPARISON_CLI_SHA",
+            "vscodeAppland": "$COMPARISON_VIEWER_SHA",
+            "reviewAction": "$COMPARISON_REVIEW_ACTION_SHA",
+            "skills": "$COMPARISON_SKILLS_SHA"
+          }
+          JSON
+
           cat comparison/summary.md >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload interactive comparison artifact
         uses: actions/upload-artifact@v6
         with:
-          name: appmap-pr-comparison
+          name: appmap-pr-comparison-schema-v1
           path: comparison
           retention-days: 14
           if-no-files-found: error
@@ -125,18 +154,21 @@ jobs:
     needs: comparison-bundle
     runs-on: ubuntu-latest
     steps:
-      - name: Check out VS Code comparison prototype
+      - name: Check out pinned VS Code comparison viewer
         uses: actions/checkout@v6
         with:
           repository: tryingET/vscode-appland
-          ref: agent/sequence-comparison-editor
+          ref: ${{ env.COMPARISON_VIEWER_SHA }}
           fetch-depth: 1
           persist-credentials: false
+
+      - name: Verify the pinned viewer revision
+        run: test "$(git rev-parse HEAD)" = "$COMPARISON_VIEWER_SHA"
 
       - name: Download the generated comparison bundle
         uses: actions/download-artifact@v8
         with:
-          name: appmap-pr-comparison
+          name: appmap-pr-comparison-schema-v1
           path: dogfood-comparison
 
       - name: Install the generated bundle as the editor test fixture
@@ -177,13 +209,13 @@ jobs:
             yarn test:integration test/integration/appmapEditor/openSequenceComparison.test.ts
 
       - name: Package dogfood VSIX
-        run: yarn vsce package --out appmap-comparison-dogfood.vsix
+        run: yarn vsce package --out appmap-comparison-schema-v1-dogfood.vsix
 
       - name: Upload comparison viewer
         uses: actions/upload-artifact@v6
         with:
-          name: appmap-comparison-vsix
-          path: appmap-comparison-dogfood.vsix
+          name: appmap-comparison-schema-v1-vsix
+          path: appmap-comparison-schema-v1-dogfood.vsix
           retention-days: 14
           if-no-files-found: error
 
@@ -191,21 +223,36 @@ jobs:
     name: Verify review artifact publisher
     runs-on: ubuntu-latest
     steps:
-      - name: Check out review-action comparison publisher
+      - name: Check out pinned review-action publisher
         uses: actions/checkout@v6
         with:
           repository: tryingET/review-action
-          ref: agent/upload-comparison-artifact
+          ref: ${{ env.COMPARISON_REVIEW_ACTION_SHA }}
+          path: review-action
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Check out pinned comparison skill
+        uses: actions/checkout@v6
+        with:
+          repository: tryingET/skills
+          ref: ${{ env.COMPARISON_SKILLS_SHA }}
+          path: comparison-skills
           fetch-depth: 1
           persist-credentials: false
 
       - name: Run offline action harness
-        run: test/run.sh
+        run: |
+          test "$(git -C review-action rev-parse HEAD)" = "$COMPARISON_REVIEW_ACTION_SHA"
+          test "$(git -C comparison-skills rev-parse HEAD)" = "$COMPARISON_SKILLS_SHA"
+          (cd review-action && test/run.sh)
 
-      - name: Validate comparison skill contract is present
+      - name: Validate publisher and skill contract
         shell: bash
         run: |
           set -euo pipefail
-          test -s test/fixtures/skills-src/appmap-comparison/SKILL.md
-          grep -q 'appmap-comparison' scripts/install-skills.sh
-          grep -q 'upload-comparison-artifact' action.yml
+          test -s comparison-skills/appmap-comparison/SKILL.md
+          grep -q 'appmap.comparison' comparison-skills/appmap-comparison/SKILL.md
+          grep -q 'elementIds' comparison-skills/appmap-comparison/SKILL.md
+          grep -q 'appmap-comparison' review-action/scripts/install-skills.sh
+          grep -q 'upload-comparison-artifact' review-action/action.yml
